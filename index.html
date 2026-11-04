@@ -175,6 +175,7 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
         <span class="chip" id="chLento" style="--c:var(--blue)" hidden></span>
         <span class="chip" id="chInv" style="--c:var(--red)" hidden></span>
         <span class="chip" id="chEscudo" style="--c:var(--violet)" hidden></span>
+        <span class="chip" id="chNet" style="--c:var(--green)" hidden></span>
       </div>
       <div class="tools">
         <button class="mini tgl-music" data-act="music" type="button">Música</button>
@@ -698,6 +699,7 @@ function newWorld(mode) {
     w.bikes = net.role === 'host' ? [host, guest] : [guest, host];
     w.bikes[1].remote = true;
     w.bikes[1].netStep = 120;
+    w.bikes[1].lead = 0;
   } else if (mode === 'solo') {
     w.bikes.push(makeBike(COLOR.cyan, Math.floor(cols / 2) - 5, Math.floor(rows / 2), 'right', 4, false));
   } else {
@@ -1035,6 +1037,7 @@ function update(dt) {
     watchRival();
     if (W.ending > 0) return;
     W.bikes[1].acc += dt;
+    predictRival(W.bikes[1], dt);
   }
   for (const b of W.bikes) {
     if (b.remote) continue;
@@ -1149,7 +1152,8 @@ function trailSegments(b, t) {
     if (i === cs.length - 1 && b.grow === 0 && i > 0) {
       const prev = cs[i - 1];
       if (Math.abs(prev.x - cs[i].x) + Math.abs(prev.y - cs[i].y) === 1) {
-        px += (prev.x - cs[i].x) * t; py += (prev.y - cs[i].y) * t;
+        const tail = Math.min(1, t);
+        px += (prev.x - cs[i].x) * tail; py += (prev.y - cs[i].y) * tail;
       }
     }
     if (i > 0 && Math.abs(cs[i - 1].x - cs[i].x) + Math.abs(cs[i - 1].y - cs[i].y) > 1) {
@@ -1167,7 +1171,7 @@ function strokeLines(lines, width, color, alpha) {
   g.stroke();
 }
 function drawBike(b, now) {
-  const t = Math.min(1, b.acc / stepMs(b));
+  const t = b.remote ? Math.max(0, b.lead) : Math.min(1, b.acc / stepMs(b));
   const lines = trailSegments(b, t);
   const ghost = (isHuman(b) && W.t.ghost > 0) || b.netGhost;
   const spawning = W.time - b.born < 700 && b.born > 0;
@@ -1314,13 +1318,18 @@ function updateHud() {
   $('hudLevel').innerHTML = W.online ? String(W.level) : W.level + ' <small>' + (W.eaten % 5) + '/5</small>';
   $('hudSpeed').innerHTML = (1000 / stepMs(p)).toFixed(1) + ' <small>c/s</small>';
   const sec = ms => (ms / 1000).toFixed(1) + ' s';
+  const rtt = W.online && net ? net.rtt : 0;
+  setChip('chNet', !!rtt, 'RED ' + Math.round(rtt) + ' ms · ' + Math.round(fpsAvg) + ' FPS');
+  if (rtt) $('chNet').style.setProperty('--c', rtt < 120 && fpsAvg > 45 ? COLOR.green : rtt < 250 && fpsAvg > 30 ? COLOR.yellow : COLOR.red);
   setChip('chTurbo', W.t.turbo > 0, (W.online ? 'TURBO ' : 'TURBO ×2 ') + sec(W.t.turbo));
   setChip('chLento', W.t.lento > 0, 'LENTO ' + sec(W.t.lento));
   setChip('chInv', W.t.inversor > 0, 'AL REVÉS ' + sec(W.t.inversor));
   setChip('chEscudo', W.shield || W.t.ghost > 0, W.t.ghost > 0 ? 'ATRAVIESAS ' + sec(W.t.ghost) : 'ESCUDO LISTO');
 }
-let lastFrame = 0;
+let lastFrame = 0, fpsAvg = 60;
 function frame(now) {
+  const gap = now - lastFrame;
+  if (gap > 0 && gap < 1000) fpsAvg = fpsAvg * .95 + (1000 / gap) * .05;
   const dt = Math.min(50, now - lastFrame || 16);
   lastFrame = now;
   update(dt);
@@ -1435,7 +1444,7 @@ const ACTIONS = {
 let net = null, rtc = null, roomBusy = false;
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ROOM_PATTERN = /^[A-HJ-NP-Z2-9]{6}$/;
-const ROOM_WINS = 3, RIVAL_SILENCE_MS = 5000;
+const ROOM_WINS = 3, RIVAL_SILENCE_MS = 5000, PREDICT_MAX = 2;
 const DIR_BY_LETTER = { u:'up', d:'down', l:'left', r:'right' };
 
 async function netLoad() {
@@ -1636,22 +1645,50 @@ function sendMyState() {
   const p = player();
   let cells = '';
   for (const c of p.cells) cells += c.x.toString(36) + c.y.toString(36);
-  netSet('state/' + net.role, net.n + '|' + p.dir[0] + '|' + (W.t.ghost > 0 ? 1 : 0) + '|' + cells);
+  const value = net.n + '|' + p.dir[0] + '|' + (W.t.ghost > 0 ? 1 : 0) + '|' + cells + '|' + Math.round(stepMs(p));
+  const write = rtc.sdk.set(netRef('state/' + net.role), value);
+  write.catch(e => console.warn('Sala: estado', e.code));
+  // Una medición a la vez: cuánto tarda la base en confirmar lo enviado.
+  if (net.pingStart) return;
+  const room = net, start = performance.now();
+  room.pingStart = start;
+  write.then(() => {
+    const ms = performance.now() - start;
+    room.rtt = room.rtt ? room.rtt * .8 + ms * .2 : ms;
+  }).catch(() => {}).finally(() => { room.pingStart = 0; });
+}
+// Dibuja al rival donde probablemente ya está, sin cruzar bordes ni muros.
+// Los choques siguen usando solo las casillas que el rival confirmó.
+function predictRival(r, dt) {
+  if (!r.alive) return;
+  const d = DIRS[r.dir], h = r.cells[0];
+  let room = 0;
+  for (let k = 1; k <= 3; k++) {
+    const x = h.x + d.x * k, y = h.y + d.y * k;
+    if (x < 0 || y < 0 || x >= W.cols || y >= W.rows || solidAt(x, y, r) === 'muro') break;
+    room = k;
+  }
+  const target = Math.min(PREDICT_MAX, room, (r.acc + Math.min(net.rtt || 0, 400)) / r.netStep);
+  r.lead += (target - r.lead) * Math.min(1, dt / 70);
 }
 function onRivalState(text) {
   if (!text || !W || !W.online) return;
-  const [n, dir, ghost, cells] = text.split('|');
+  const [n, dir, ghost, cells, step] = text.split('|');
   if (Number(n) !== net.n || !cells) return;
   const r = W.bikes[1];
   if (!r.alive) return;
   const now = performance.now();
-  const gap = now - net.lastRival;
-  if (gap > 30 && gap < 300) r.netStep = r.netStep * .7 + gap * .3;
   net.lastRival = now;
-  r.dir = DIR_BY_LETTER[dir];
+  if (Number(step) > 0) r.netStep = Number(step);
+  const newDir = DIR_BY_LETTER[dir];
   r.netGhost = ghost === '1';
   const list = [];
   for (let i = 0; i + 1 < cells.length; i += 2) list.push({ x:parseInt(cells[i], 36), y:parseInt(cells[i + 1], 36) });
+  // Si siguió recto, la cabeza dibujada no salta: solo se descuenta lo que avanzó.
+  const old = r.cells[0], d = DIRS[r.dir], ahead = (list[0].x - old.x) * d.x + (list[0].y - old.y) * d.y;
+  const straight = newDir === r.dir && list[0].x - old.x === d.x * ahead && list[0].y - old.y === d.y * ahead;
+  r.lead = straight ? r.lead - ahead : 0;
+  r.dir = newDir;
   r.cells = list;
   r.acc = 0;
 }
