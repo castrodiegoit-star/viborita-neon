@@ -1,0 +1,19 @@
+{
+  "id": "./",
+  "name": "Viborita Neón",
+  "short_name": "Viborita",
+  "description": "La viborita con estelas de luz, piezas con poderes y duelo contra la CPU.",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#04050f",
+  "theme_color": "#04050f",
+  "categories": ["games"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -3,7 +3,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="claude:viewport-fit-sides" content="cover">
+<meta name="theme-color" content="#04050f">
 <title>Viborita Neón</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=Share+Tech+Mono&family=Tourney:ital,wght@1,800&display=swap">
@@ -363,6 +367,8 @@ async function connectRecords() {
     for (const mode of ['solo', 'duelo']) {
       fs.onSnapshot(fs.doc(db, 'records', mode), snap => {
         const d = snap.exists() ? snap.data() : null;
+        // Sin internet llega un documento vacío: no significa que el récord sea 0.
+        if (!d && snap.metadata.fromCache) return;
         WORLD[mode] = { score: d ? d.score : 0, name: d ? d.name : '' };
         refreshRecords();
       }, err => {
@@ -1401,6 +1407,9 @@ function paintLegend() {
 refreshToggles();
 paintLegend();
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(paintLegend);
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  navigator.serviceWorker.register('sw.js').catch(e => console.warn('Modo sin conexión no disponible:', e.message));
+}
 goMenu();
 connectRecords();
 requestAnimationFrame(frame);
