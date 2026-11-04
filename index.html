@@ -228,7 +228,7 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
             <h3>Modos</h3>
             <p><b>Solo:</b> tú contra la arena.</p>
             <p><b>Duelo:</b> una viborita naranja compite por las piezas. Si choca, ganas 50 puntos y vuelve más rápida a los 4 segundos.</p>
-            <p><b>Desafío 1 vs 1:</b> crea una sala y envía el enlace. Pierde la ronda quien choque primero, y la partida es para el primero en ganar 3 rondas. Los poderes te afectan solo a ti y no hay pausa. Tu rival ve tu apodo.</p>
+            <p><b>Desafío 1 vs 1:</b> crea una sala y envía el enlace. Pierde la ronda quien choque primero, y la partida es para el primero en ganar 3 rondas. Los poderes te afectan solo a ti y no hay pausa. Tu rival ve tu apodo y, si se conectan directo, podría ver tu dirección IP.</p>
             <h3>Controles</h3>
             <p><kbd>Flechas</kbd> o <kbd>W A S D</kbd> para moverte. En el teléfono, desliza el dedo o usa la cruceta.</p>
             <p><kbd>P</kbd> o <kbd>Esc</kbd> pausa, <kbd>M</kbd> música, <kbd>N</kbd> efectos.</p>
@@ -303,6 +303,7 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
             <button class="btn" type="submit">Crear sala</button>
           </div>
         </form>
+        <p class="credit">Para reducir la demora, el juego intenta conectarte directo con tu rival, y cada uno podría ver la dirección IP del otro.</p>
         <p class="cause" id="onlineError" role="alert" hidden></p>
         <div class="stack"><button class="btn" data-act="menu" type="button">Volver</button></div>
       </div>
@@ -329,6 +330,7 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
             <input id="joinName" type="text" maxlength="12" autocomplete="nickname" placeholder="Tu apodo">
             <button class="btn" type="submit">Aceptar</button>
           </div>
+          <p class="credit">Para reducir la demora, el juego intenta conectarte directo con tu rival, y cada uno podría ver la dirección IP del otro.</p>
         </form>
         <p id="joinWait" hidden>La partida empieza en un momento.</p>
         <p class="cause" id="joinError" role="alert" hidden></p>
@@ -700,6 +702,7 @@ function newWorld(mode) {
     w.bikes[1].remote = true;
     w.bikes[1].netStep = 120;
     w.bikes[1].lead = 0;
+    w.bikes[1].netSeq = 0;
   } else if (mode === 'solo') {
     w.bikes.push(makeBike(COLOR.cyan, Math.floor(cols / 2) - 5, Math.floor(rows / 2), 'right', 4, false));
   } else {
@@ -1318,8 +1321,9 @@ function updateHud() {
   $('hudLevel').innerHTML = W.online ? String(W.level) : W.level + ' <small>' + (W.eaten % 5) + '/5</small>';
   $('hudSpeed').innerHTML = (1000 / stepMs(p)).toFixed(1) + ' <small>c/s</small>';
   const sec = ms => (ms / 1000).toFixed(1) + ' s';
-  const rtt = W.online && net ? net.rtt : 0;
-  setChip('chNet', !!rtt, 'RED ' + Math.round(rtt) + ' ms · ' + Math.round(fpsAvg) + ' FPS');
+  const direct = W.online && net && p2pReady() && net.p2p.rtt > 0;
+  const rtt = !W.online || !net ? 0 : direct ? net.p2p.rtt : net.rtt;
+  setChip('chNet', !!rtt, (direct ? 'DIRECTA ' : 'SERVIDOR ') + Math.round(rtt) + ' ms · ' + Math.round(fpsAvg) + ' FPS');
   if (rtt) $('chNet').style.setProperty('--c', rtt < 120 && fpsAvg > 45 ? COLOR.green : rtt < 250 && fpsAvg > 30 ? COLOR.yellow : COLOR.red);
   setChip('chTurbo', W.t.turbo > 0, (W.online ? 'TURBO ' : 'TURBO ×2 ') + sec(W.t.turbo));
   setChip('chLento', W.t.lento > 0, 'LENTO ' + sec(W.t.lento));
@@ -1474,9 +1478,114 @@ function newRoomCode() {
 function netOpen(role, code, name) {
   net = {
     role, code, name, rivalName:'', rivalHere:false, n:0, wins:{ host:0, guest:0 }, ends:{}, resolved:false,
-    final:false, cause:'', items:new Map(), walls:new Map(), seq:0, again:{}, lastRival:0, timers:[], subs:[], dropTimer:0, online:false,
+    final:false, cause:'', items:new Map(), walls:new Map(), seq:0, again:{}, lastRival:0, timers:[], subs:[], dropTimer:0, online:false, p2p:null, stateSeq:0,
   };
 }
+
+/* ----- Conexión directa entre jugadores -----
+   Los datos urgentes viajan por un canal directo si las dos redes lo permiten.
+   Si no se abre o se cae, todo sigue funcionando por el servidor. */
+const ICE_CONFIG = { iceServers:[{ urls:['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }] };
+const P2P_PING_MS = 1000, P2P_DEAD_MS = 2500, ICE_WAIT_MS = 2500;
+
+function p2pClose() {
+  if (!net || !net.p2p) return;
+  const p = net.p2p;
+  net.p2p = null;
+  clearInterval(p.timer);
+  try { p.pc.close(); } catch (e) {}
+}
+function p2pReady() { const p = net && net.p2p; return !!p && p.up && !!p.ch && p.ch.readyState === 'open'; }
+function p2pSend(text) {
+  if (!p2pReady()) return false;
+  try { net.p2p.ch.send(text); return true; } catch (e) { return false; }
+}
+function p2pIceDone(pc) {
+  return new Promise(done => {
+    if (pc.iceGatheringState === 'complete') { done(); return; }
+    const timer = setTimeout(done, ICE_WAIT_MS);
+    pc.addEventListener('icegatheringstatechange', () => {
+      if (pc.iceGatheringState === 'complete') { clearTimeout(timer); done(); }
+    });
+  });
+}
+function p2pNew(id) {
+  p2pClose();
+  const pc = new RTCPeerConnection(ICE_CONFIG);
+  const p = { pc, id, ch:null, up:false, rtt:0, lastPong:0, timer:0, answered:false };
+  pc.addEventListener('connectionstatechange', () => {
+    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') p.up = false;
+  });
+  net.p2p = p;
+  return p;
+}
+function p2pWire(p, ch) {
+  p.ch = ch;
+  ch.onopen = () => {
+    p.up = true;
+    p.lastPong = performance.now();
+    ch.send('p' + performance.now());
+    p.timer = setInterval(() => {
+      if (ch.readyState !== 'open') { p.up = false; return; }
+      if (performance.now() - p.lastPong > P2P_DEAD_MS) p.up = false;
+      try { ch.send('p' + performance.now()); } catch (e) { p.up = false; }
+    }, P2P_PING_MS);
+    // Las direcciones ya cumplieron su función: no se dejan guardadas.
+    if (net && net.p2p === p && net.role === 'host') rtc.sdk.remove(netRef('sig')).catch(() => {});
+  };
+  ch.onclose = () => { p.up = false; clearInterval(p.timer); };
+  ch.onmessage = e => {
+    if (!net || net.p2p !== p) return;
+    const kind = e.data[0], body = e.data.slice(1);
+    if (kind === 'p') { try { ch.send('q' + body); } catch (err) {} return; }
+    if (kind === 'q') {
+      const ms = performance.now() - Number(body);
+      p.rtt = p.rtt ? p.rtt * .8 + ms * .2 : ms;
+      p.lastPong = performance.now();
+      if (ch.readyState === 'open') p.up = true;
+      return;
+    }
+    if (kind === 's') onRivalState(body);
+    else if (kind === 'e') onRivalEnd(body);
+    else if (kind === 'r') onItemRemoved(body);
+  };
+}
+async function p2pOffer() {
+  if (!window.RTCPeerConnection) return;
+  const room = net, id = newRoomCode();
+  try {
+    const p = p2pNew(id);
+    p2pWire(p, p.pc.createDataChannel('juego', { ordered:false, maxRetransmits:0 }));
+    await p.pc.setLocalDescription(await p.pc.createOffer());
+    await p2pIceDone(p.pc);
+    if (net === room && net.p2p === p && net.rivalHere) netSet('sig/offer', id + '|' + p.pc.localDescription.sdp);
+  } catch (e) { console.warn('Conexión directa no disponible:', e.message); }
+}
+async function p2pOnAnswer(text) {
+  const p = net.p2p;
+  if (!text || !p || p.answered) return;
+  const cut = text.indexOf('|');
+  if (text.slice(0, cut) !== p.id) return;
+  p.answered = true;
+  try { await p.pc.setRemoteDescription({ type:'answer', sdp:text.slice(cut + 1) }); }
+  catch (e) { console.warn('Conexión directa no disponible:', e.message); }
+}
+async function p2pOnOffer(text) {
+  if (!text || !window.RTCPeerConnection) return;
+  const cut = text.indexOf('|'), id = text.slice(0, cut);
+  if (net.p2p && net.p2p.id === id) return;
+  const room = net;
+  try {
+    const p = p2pNew(id);
+    p.pc.addEventListener('datachannel', e => p2pWire(p, e.channel));
+    await p.pc.setRemoteDescription({ type:'offer', sdp:text.slice(cut + 1) });
+    await p.pc.setLocalDescription(await p.pc.createAnswer());
+    await p2pIceDone(p.pc);
+    if (net === room && net.p2p === p) netSet('sig/answer', id + '|' + p.pc.localDescription.sdp);
+  } catch (e) { console.warn('Conexión directa no disponible:', e.message); }
+}
+// Tiempo aproximado que tarda en llegar lo que manda el rival.
+function netLag() { return p2pReady() ? net.p2p.rtt / 2 : net.rtt || 0; }
 
 /* ----- Crear y entrar ----- */
 function setOnlineError(id, text) { $(id).textContent = text; $(id).hidden = !text; }
@@ -1575,6 +1684,9 @@ function netAttach() {
   netListen(sdk.onChildAdded(items, s => onItemAdded(s.key, s.val()), onFail));
   netListen(sdk.onChildRemoved(items, s => onItemRemoved(s.key), onFail));
   netListen(sdk.onChildAdded(walls, s => onWallAdded(s.key, s.val()), onFail));
+  const noSig = e => console.warn('Conexión directa no disponible:', e.code);
+  if (role === 'host') netListen(sdk.onValue(netRef('sig/answer'), s => p2pOnAnswer(s.val()), noSig));
+  else netListen(sdk.onValue(netRef('sig/offer'), s => p2pOnOffer(s.val()), noSig));
   netListen(sdk.onValue(sdk.ref(rtc.db, '.info/connected'), s => {
     clearTimeout(net.dropTimer);
     if (s.val()) { net.online = true; return; }
@@ -1589,6 +1701,7 @@ function onRivalSlot(slot) {
     if (net.role === 'host') {
       toast(slot.name + ' entró a tu sala.', 2500);
       netLater(1200, () => writeRound(net.n + 1, 0, 0));
+      p2pOffer();
     }
     return;
   }
@@ -1600,7 +1713,8 @@ function onRivalSlot(slot) {
   net.timers = [];
   Object.assign(net, { rivalHere:false, rivalName:'', wins:{ host:0, guest:0 }, ends:{}, resolved:false, final:false, again:{} });
   net.items.clear(); net.walls.clear();
-  rtc.sdk.update(netRef(), { round:null, items:null, walls:null }).catch(() => {});
+  p2pClose();
+  rtc.sdk.update(netRef(), { round:null, items:null, walls:null, sig:null }).catch(() => {});
   W = newWorld('demo');
   resize();
   frameColor = ''; setFrame();
@@ -1645,7 +1759,8 @@ function sendMyState() {
   const p = player();
   let cells = '';
   for (const c of p.cells) cells += c.x.toString(36) + c.y.toString(36);
-  const value = net.n + '|' + p.dir[0] + '|' + (W.t.ghost > 0 ? 1 : 0) + '|' + cells + '|' + Math.round(stepMs(p));
+  const value = net.n + '|' + p.dir[0] + '|' + (W.t.ghost > 0 ? 1 : 0) + '|' + cells + '|' + Math.round(stepMs(p)) + '|' + (++net.stateSeq);
+  if (p2pSend('s' + value)) return;
   const write = rtc.sdk.set(netRef('state/' + net.role), value);
   write.catch(e => console.warn('Sala: estado', e.code));
   // Una medición a la vez: cuánto tarda la base en confirmar lo enviado.
@@ -1668,15 +1783,18 @@ function predictRival(r, dt) {
     if (x < 0 || y < 0 || x >= W.cols || y >= W.rows || solidAt(x, y, r) === 'muro') break;
     room = k;
   }
-  const target = Math.min(PREDICT_MAX, room, (r.acc + Math.min(net.rtt || 0, 400)) / r.netStep);
+  const target = Math.min(PREDICT_MAX, room, (r.acc + Math.min(netLag(), 400)) / r.netStep);
   r.lead += (target - r.lead) * Math.min(1, dt / 70);
 }
 function onRivalState(text) {
   if (!text || !W || !W.online) return;
-  const [n, dir, ghost, cells, step] = text.split('|');
+  const [n, dir, ghost, cells, step, seq] = text.split('|');
   if (Number(n) !== net.n || !cells) return;
   const r = W.bikes[1];
   if (!r.alive) return;
+  // El canal directo no garantiza el orden: un estado viejo se descarta.
+  if (Number(seq) <= r.netSeq) return;
+  r.netSeq = Number(seq);
   const now = performance.now();
   net.lastRival = now;
   if (Number(step) > 0) r.netStep = Number(step);
@@ -1694,6 +1812,8 @@ function onRivalState(text) {
 }
 function endMyRound(kind) {
   net.ends.me = kind;
+  // Va por los dos caminos: el directo es más rápido y el servidor nunca lo pierde.
+  p2pSend('e' + net.n + ':' + kind);
   netSet('end/' + net.role, net.n + ':' + kind);
   checkRoundResult();
 }
@@ -1824,6 +1944,7 @@ function onItemRemoved(id) {
 }
 function netRemoveItem(id) {
   net.items.delete(id);
+  p2pSend('r' + id);
   rtc.sdk.remove(netRef('items/' + id)).catch(() => {});
 }
 function netSpawnWall(cells) {
@@ -1850,6 +1971,7 @@ function netTeardown() {
   net.subs.forEach(unsubscribe => unsubscribe());
   net.timers.forEach(clearTimeout);
   clearTimeout(net.dropTimer);
+  p2pClose();
   net = null;
   resetLeaveButton();
   clearRoomLink();
