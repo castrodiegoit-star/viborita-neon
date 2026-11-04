@@ -765,7 +765,11 @@ function stepBike(b) {
   if (b.ai) aiThink(b);
   else if (b.queue.length) {
     const q = b.queue.shift();
-    if (q !== OPP[b.dir]) b.dir = q;
+    if (q !== OPP[b.dir]) {
+      b.dir = q;
+      // Este tramo ya tiene su giro: otro giro inmediato podría apuntar al cuello.
+      b.turned = true;
+    }
   }
   if (isHuman(b)) W.maxLen = Math.max(W.maxLen, b.cells.length + b.grow);
 }
