@@ -234,6 +234,7 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
           </ul>
         </div>
         <p>Las piezas especiales desaparecen a los 10 segundos y parpadean cuando les quedan 3.</p>
+        <p><b>Récord mundial:</b> cada modo tiene uno, compartido por todos los jugadores. Si lo superas, puedes publicarlo con tu apodo. Usa un apodo, no tu nombre completo.</p>
         <div class="stack"><button class="btn" data-act="rulesBack" type="button">Volver</button></div>
       </div>
     </section>
@@ -256,15 +257,16 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
         <p class="cause" id="overCause"></p>
         <p class="record" id="overRecord" hidden>¡Nuevo récord!</p>
         <form class="namebox" id="recordForm" hidden>
-          <label for="recordName">Escribe el nombre para este récord</label>
+          <label for="recordName">Escribe un apodo. Todos los jugadores lo van a ver.</label>
           <div class="namerow">
-            <input id="recordName" type="text" maxlength="12" autocomplete="nickname" placeholder="Tu nombre">
-            <button class="btn" type="submit">Guardar</button>
+            <input id="recordName" type="text" maxlength="12" autocomplete="nickname" placeholder="Tu apodo">
+            <button class="btn" type="submit">Publicar</button>
           </div>
         </form>
         <dl class="tally">
           <dt>Puntos</dt><dd id="overScore">0</dd>
-          <dt>Récord</dt><dd id="overBest">0</dd>
+          <dt>Récord mundial</dt><dd id="overBest">0</dd>
+          <dt>Tu mejor puntaje</dt><dd id="overMine">0</dd>
           <dt>Largo máximo</dt><dd id="overLen">0</dd>
           <dt>Nivel alcanzado</dt><dd id="overLevel">1</dd>
           <dt id="overKillsL">Rivales derribados</dt><dd id="overKills">0</dd>
@@ -320,12 +322,86 @@ const CAUSES = {
 
 /* ========= Guardado ========= */
 const SAVE_KEY = 'viborita-neon';
-const save = { solo:0, duelo:0, soloName:'', dueloName:'', lastName:'', music:true, fx:true };
+const save = { solo:0, duelo:0, lastName:'', music:true, fx:true };
 try { Object.assign(save, JSON.parse(localStorage.getItem(SAVE_KEY) || '{}')); } catch (e) {}
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
+
+/* ========= Récord mundial en Firebase =========
+   Estos datos identifican al proyecto y son públicos por diseño.
+   Lo que protege la base de datos son las reglas de firestore.rules. */
+const FIREBASE_CONFIG = {
+  apiKey: 'AIzaSyAKN75BgxlaAJH1hxMbpYRqZROsc-JO9FI',
+  authDomain: 'viborita-neon.firebaseapp.com',
+  projectId: 'viborita-neon',
+  storageBucket: 'viborita-neon.firebasestorage.app',
+  messagingSenderId: '1000000440034',
+  appId: '1:1000000440034:web:0b8b66484104ef1436c0bb',
+};
+const FIREBASE_SDK = 'https://www.gstatic.com/firebasejs/13.1.0/';
+const WORLD = { solo:null, duelo:null };
+let fb = null, pendingRecord = null;
+
+function bestScore(mode) { return WORLD[mode] ? WORLD[mode].score : save[mode]; }
+function bestName(mode) { return WORLD[mode] ? WORLD[mode].name : ''; }
 function bestLine(mode) {
-  const name = save[mode + 'Name'];
-  return save[mode] + (name ? ' · ' + name : '');
+  const name = bestName(mode);
+  return bestScore(mode) + (name ? ' · ' + name : '');
+}
+function refreshRecords() {
+  $('bestSolo').textContent = 'récord ' + bestLine('solo');
+  $('bestDuelo').textContent = 'récord ' + bestLine('duelo');
+  if (scr === 'over' && W) $('overBest').textContent = bestLine(W.mode);
+}
+async function connectRecords() {
+  try {
+    const [appSdk, fs] = await Promise.all([
+      import(FIREBASE_SDK + 'firebase-app.js'),
+      import(FIREBASE_SDK + 'firebase-firestore.js'),
+    ]);
+    const db = fs.getFirestore(appSdk.initializeApp(FIREBASE_CONFIG));
+    fb = { fs, db };
+    for (const mode of ['solo', 'duelo']) {
+      fs.onSnapshot(fs.doc(db, 'records', mode), snap => {
+        const d = snap.exists() ? snap.data() : null;
+        WORLD[mode] = { score: d ? d.score : 0, name: d ? d.name : '' };
+        refreshRecords();
+      }, err => {
+        WORLD[mode] = null;
+        refreshRecords();
+        console.warn('No se pudo leer el récord mundial:', err.code);
+      });
+    }
+  } catch (e) {
+    console.warn('Récord mundial no disponible:', e.message);
+  }
+}
+async function publishRecord() {
+  if (!pendingRecord) return;
+  const rec = pendingRecord;
+  pendingRecord = null;
+  const name = save.lastName || 'Anónimo';
+  const { fs, db } = fb;
+  const ref = fs.doc(db, 'records', rec.mode);
+  try {
+    const won = await fs.runTransaction(db, async tx => {
+      const snap = await tx.get(ref);
+      if (snap.exists() && snap.data().score >= rec.score) return false;
+      tx.set(ref, { score: rec.score, name, at: fs.serverTimestamp() });
+      return true;
+    });
+    toast(won
+      ? 'Récord publicado a nombre de ' + name + '. Ya lo ven todos los jugadores.'
+      : 'Otro jugador publicó un récord mayor antes que tú.', 4000);
+  } catch (e) {
+    console.warn('No se pudo publicar el récord:', e.code);
+    if (scr === 'over' && W && W.mode === rec.mode && W.score === rec.score) {
+      pendingRecord = rec;
+      $('recordForm').hidden = false;
+      toast('No se pudo publicar el récord. Revisa tu conexión y pulsa Publicar otra vez.', 6000);
+    } else {
+      toast('No se pudo publicar el récord. Revisa tu conexión.', 5000);
+    }
+  }
 }
 
 /* ========= Compartir ========= */
@@ -1114,9 +1190,9 @@ function updateHud() {
   setText('hudLen', String(p.cells.length + p.grow));
   $('hudLevel').innerHTML = W.level + ' <small>' + (W.eaten % 5) + '/5</small>';
   $('hudSpeed').innerHTML = (1000 / stepMs(p)).toFixed(1) + ' <small>c/s</small>';
-  setText('hudBest', String(Math.max(save[W.mode], W.score)));
-  const holder = save[W.mode + 'Name'];
-  setText('hudBestL', W.score > save[W.mode] ? 'Récord: tú' : holder ? 'Récord · ' + holder : 'Récord');
+  const best = bestScore(W.mode), holder = bestName(W.mode);
+  setText('hudBest', String(Math.max(best, W.score)));
+  setText('hudBestL', W.score > best ? 'Récord: tú' : holder ? 'Récord · ' + holder : 'Récord');
   const sec = ms => (ms / 1000).toFixed(1) + ' s';
   setChip('chTurbo', W.t.turbo > 0, 'TURBO ×2 ' + sec(W.t.turbo));
   setChip('chLento', W.t.lento > 0, 'LENTO ' + sec(W.t.lento));
@@ -1153,8 +1229,7 @@ function goMenu() {
   resize();
   frameColor = ''; setFrame();
   $('count').hidden = true;
-  $('bestSolo').textContent = 'récord ' + bestLine('solo');
-  $('bestDuelo').textContent = 'récord ' + bestLine('duelo');
+  refreshRecords();
   musicSet('menu'); musicDuck(false);
   show('menu');
 }
@@ -1178,14 +1253,18 @@ function resume() {
   show('play'); musicDuck(false);
 }
 function gameOver() {
-  const record = W.score > save[W.mode];
-  if (record) { save[W.mode] = W.score; save[W.mode + 'Name'] = save.lastName; persist(); }
+  const world = !!(fb && WORLD[W.mode]) && W.score > WORLD[W.mode].score;
+  const personal = W.score > save[W.mode];
+  if (personal) { save[W.mode] = W.score; persist(); }
+  pendingRecord = world ? { mode:W.mode, score:W.score } : null;
   $('overCause').textContent = CAUSES[W.cause] || '';
-  $('overRecord').hidden = !record;
-  $('recordForm').hidden = !record;
+  $('overRecord').hidden = !world && !personal;
+  $('overRecord').textContent = world ? '¡Nuevo récord mundial!' : '¡Nuevo récord personal!';
+  $('recordForm').hidden = !world;
   $('recordName').value = save.lastName;
   $('overScore').textContent = W.score;
   $('overBest').textContent = bestLine(W.mode);
+  $('overMine').textContent = save[W.mode];
   $('overLen').textContent = W.maxLen;
   $('overLevel').textContent = W.level;
   $('overKills').textContent = W.kills;
@@ -1194,30 +1273,28 @@ function gameOver() {
   musicSet('menu'); musicDuck(true);
   show('over');
   // En el teléfono no se enfoca solo, para que el teclado no tape el resultado.
-  if (record && !matchMedia('(pointer: coarse)').matches) {
+  if (world && !matchMedia('(pointer: coarse)').matches) {
     $('recordName').focus({ preventScroll:true });
     $('recordName').select();
   }
 }
 $('recordName').addEventListener('input', e => {
-  const name = e.target.value.trim().slice(0, 12);
-  save.lastName = name;
-  save[W.mode + 'Name'] = name;
+  save.lastName = e.target.value.replace(/[<>]/g, '').trim().slice(0, 12);
   persist();
-  $('overBest').textContent = bestLine(W.mode);
 });
 $('recordForm').addEventListener('submit', e => {
   e.preventDefault();
   SFX.ok();
   $('recordForm').hidden = true;
-  toast(save.lastName ? 'Récord guardado a nombre de ' + save.lastName + '.' : 'Récord guardado sin nombre.', 3000);
   document.querySelector('#s-over .stack button').focus({ preventScroll:true });
+  publishRecord();
 });
 const ACTIONS = {
   solo() { SFX.ok(); startGame('solo'); },
   duelo() { SFX.ok(); startGame('duelo'); },
-  again() { SFX.ok(); startGame(W.mode); },
-  menu() { SFX.ui(); goMenu(); },
+  // Si el jugador sale sin pulsar Publicar, el récord se publica igual.
+  again() { SFX.ok(); publishRecord(); startGame(W.mode); },
+  menu() { SFX.ui(); publishRecord(); goMenu(); },
   rules() { SFX.ui(); rulesFrom = scr; show('rules'); },
   rulesBack() { SFX.ui(); show(rulesFrom); },
   resume() { SFX.ui(); resume(); },
@@ -1321,5 +1398,6 @@ refreshToggles();
 paintLegend();
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(paintLegend);
 goMenu();
+connectRecords();
 requestAnimationFrame(frame);
 </script>

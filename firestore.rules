@@ -1,0 +1,32 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Un récord por modo. Solo se puede publicar uno mayor al que ya existe.
+    match /records/{mode} {
+      function validMode() {
+        return mode in ['solo', 'duelo'];
+      }
+      function validRecord() {
+        let d = request.resource.data;
+        return d.keys().hasOnly(['score', 'name', 'at'])
+          && d.keys().hasAll(['score', 'name', 'at'])
+          && d.score is int && d.score > 0 && d.score <= 50000
+          && d.name is string && d.name.matches('^[^<>]{1,12}$')
+          && d.at == request.time;
+      }
+
+      allow read: if validMode();
+      allow create: if validMode() && validRecord();
+      allow update: if validMode() && validRecord()
+        && request.resource.data.score > resource.data.score
+        && request.time > resource.data.at + duration.value(5, 's');
+      allow delete: if false;
+    }
+
+    // Todo lo demás queda cerrado.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
