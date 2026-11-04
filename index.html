@@ -53,7 +53,7 @@ body {
 #hud.off { visibility: hidden; }
 .stats { display: flex; justify-content: space-between; gap: 8px; }
 .stat { min-width: 0; }
-.stat span { display: block; font-size: 11px; letter-spacing: .14em; color: var(--dim); font-weight: 600; text-transform: uppercase; }
+.stat span { display: block; max-width: 28vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; letter-spacing: .14em; color: var(--dim); font-weight: 600; text-transform: uppercase; }
 .stat b { display: block; font-family: var(--mono); font-weight: 400; font-size: clamp(20px, 3.4vw, 28px); line-height: 1.05; font-variant-numeric: tabular-nums; }
 .stat b small { font-size: .55em; color: var(--dim); }
 #hudScore { color: var(--cyan); }
@@ -99,6 +99,14 @@ canvas#board { display: block; touch-action: none; box-shadow: 0 0 0 1.5px var(-
 .tally dt { color: var(--dim); }
 .tally dd { margin: 0; font-family: var(--mono); font-size: 19px; text-align: right; font-variant-numeric: tabular-nums; }
 .record { color: var(--yellow); font-weight: 700; margin: 0; text-shadow: 0 0 12px var(--yellow); }
+.namebox { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.namebox label { color: var(--ink); font-size: 15px; }
+.namerow { display: flex; gap: 8px; }
+.namerow input { flex: 1; min-width: 0; font: 600 17px var(--body); color: var(--ink); background: var(--void); border: 1.5px solid var(--yellow); padding: 8px 10px; -webkit-user-select: text; user-select: text; }
+.namerow input:focus-visible { outline: 2px solid var(--yellow); outline-offset: 1px; }
+.namerow .btn { flex: none; border-color: var(--yellow); }
+.namerow .btn:hover, .namerow .btn:focus-visible { background: var(--yellow); box-shadow: 0 0 22px var(--yellow); }
+#toast { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); max-width: calc(100% - 24px); z-index: 5; padding: 9px 14px; background: var(--void); color: var(--ink); border: 1.5px solid var(--green); box-shadow: 0 0 20px -4px var(--green); font-size: 15px; line-height: 1.35; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
 
 /* Reglas */
 .panel.wide { width: min(880px, 100%); }
@@ -150,7 +158,7 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
       <div class="stat"><span>Largo</span><b id="hudLen">4</b></div>
       <div class="stat"><span>Nivel</span><b id="hudLevel">1</b></div>
       <div class="stat"><span>Vel.</span><b id="hudSpeed">8.2</b></div>
-      <div class="stat"><span>Récord</span><b id="hudBest">0</b></div>
+      <div class="stat"><span id="hudBestL">Récord</span><b id="hudBest">0</b></div>
     </div>
     <div class="hudrow">
       <div class="chips">
@@ -179,6 +187,7 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
           <button class="btn" data-act="solo" type="button">Jugar solo <small id="bestSolo">récord 0</small></button>
           <button class="btn alt" data-act="duelo" type="button">Duelo contra la CPU <small id="bestDuelo">récord 0</small></button>
           <button class="btn" data-act="rules" type="button">Reglas y piezas</button>
+          <button class="btn" data-act="share" type="button">Compartir el juego</button>
         </div>
         <div class="sndrow">
           <button class="mini tgl-music" data-act="music" type="button">Música</button>
@@ -246,6 +255,13 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
         <h2>Fin de la partida</h2>
         <p class="cause" id="overCause"></p>
         <p class="record" id="overRecord" hidden>¡Nuevo récord!</p>
+        <form class="namebox" id="recordForm" hidden>
+          <label for="recordName">Escribe el nombre para este récord</label>
+          <div class="namerow">
+            <input id="recordName" type="text" maxlength="12" autocomplete="nickname" placeholder="Tu nombre">
+            <button class="btn" type="submit">Guardar</button>
+          </div>
+        </form>
         <dl class="tally">
           <dt>Puntos</dt><dd id="overScore">0</dd>
           <dt>Récord</dt><dd id="overBest">0</dd>
@@ -255,10 +271,12 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
         </dl>
         <div class="stack">
           <button class="btn" data-act="again" type="button">Jugar otra vez</button>
+          <button class="btn" data-act="share" type="button">Compartir mi puntaje</button>
           <button class="btn" data-act="menu" type="button">Salir al menú</button>
         </div>
       </div>
     </section>
+    <div id="toast" role="status" hidden></div>
   </main>
 
   <div id="dpad">
@@ -302,9 +320,39 @@ const CAUSES = {
 
 /* ========= Guardado ========= */
 const SAVE_KEY = 'viborita-neon';
-const save = { solo:0, duelo:0, music:true, fx:true };
+const save = { solo:0, duelo:0, soloName:'', dueloName:'', lastName:'', music:true, fx:true };
 try { Object.assign(save, JSON.parse(localStorage.getItem(SAVE_KEY) || '{}')); } catch (e) {}
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
+function bestLine(mode) {
+  const name = save[mode + 'Name'];
+  return save[mode] + (name ? ' · ' + name : '');
+}
+
+/* ========= Compartir ========= */
+const SHARE_URL = 'https://castrodiegoit-star.github.io/viborita-neon/';
+let toastTimer = 0;
+function toast(text, ms) {
+  const el = $('toast');
+  el.textContent = text; el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, ms);
+}
+async function shareGame() {
+  const text = scr === 'over' && W.score > 0
+    ? 'Hice ' + W.score + ' puntos en Viborita Neón. ¿Me ganas?'
+    : 'Juega a Viborita Neón, la viborita con estelas de luz.';
+  // En el teléfono se abre el menú para compartir; en la computadora se copia el enlace.
+  if (navigator.share && matchMedia('(pointer: coarse)').matches) {
+    try { await navigator.share({ title:'Viborita Neón', text, url:SHARE_URL }); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  try {
+    await navigator.clipboard.writeText(text + ' ' + SHARE_URL);
+    toast('Enlace copiado. Pégalo donde quieras compartirlo.', 3000);
+  } catch (e) {
+    toast('Copia este enlace: ' + SHARE_URL, 10000);
+  }
+}
 
 /* ========= Audio: todo se sintetiza con Web Audio ========= */
 const A = { ctx:null, master:null, music:null, sfx:null, echo:null, noise:null };
@@ -1067,6 +1115,8 @@ function updateHud() {
   $('hudLevel').innerHTML = W.level + ' <small>' + (W.eaten % 5) + '/5</small>';
   $('hudSpeed').innerHTML = (1000 / stepMs(p)).toFixed(1) + ' <small>c/s</small>';
   setText('hudBest', String(Math.max(save[W.mode], W.score)));
+  const holder = save[W.mode + 'Name'];
+  setText('hudBestL', W.score > save[W.mode] ? 'Récord: tú' : holder ? 'Récord · ' + holder : 'Récord');
   const sec = ms => (ms / 1000).toFixed(1) + ' s';
   setChip('chTurbo', W.t.turbo > 0, 'TURBO ×2 ' + sec(W.t.turbo));
   setChip('chLento', W.t.lento > 0, 'LENTO ' + sec(W.t.lento));
@@ -1103,8 +1153,8 @@ function goMenu() {
   resize();
   frameColor = ''; setFrame();
   $('count').hidden = true;
-  $('bestSolo').textContent = 'récord ' + save.solo;
-  $('bestDuelo').textContent = 'récord ' + save.duelo;
+  $('bestSolo').textContent = 'récord ' + bestLine('solo');
+  $('bestDuelo').textContent = 'récord ' + bestLine('duelo');
   musicSet('menu'); musicDuck(false);
   show('menu');
 }
@@ -1129,11 +1179,13 @@ function resume() {
 }
 function gameOver() {
   const record = W.score > save[W.mode];
-  if (record) { save[W.mode] = W.score; persist(); }
+  if (record) { save[W.mode] = W.score; save[W.mode + 'Name'] = save.lastName; persist(); }
   $('overCause').textContent = CAUSES[W.cause] || '';
-  $('overRecord').hidden = !record || W.score === 0;
+  $('overRecord').hidden = !record;
+  $('recordForm').hidden = !record;
+  $('recordName').value = save.lastName;
   $('overScore').textContent = W.score;
-  $('overBest').textContent = save[W.mode];
+  $('overBest').textContent = bestLine(W.mode);
   $('overLen').textContent = W.maxLen;
   $('overLevel').textContent = W.level;
   $('overKills').textContent = W.kills;
@@ -1141,7 +1193,26 @@ function gameOver() {
   $('overKills').hidden = !duel; $('overKillsL').hidden = !duel;
   musicSet('menu'); musicDuck(true);
   show('over');
+  // En el teléfono no se enfoca solo, para que el teclado no tape el resultado.
+  if (record && !matchMedia('(pointer: coarse)').matches) {
+    $('recordName').focus({ preventScroll:true });
+    $('recordName').select();
+  }
 }
+$('recordName').addEventListener('input', e => {
+  const name = e.target.value.trim().slice(0, 12);
+  save.lastName = name;
+  save[W.mode + 'Name'] = name;
+  persist();
+  $('overBest').textContent = bestLine(W.mode);
+});
+$('recordForm').addEventListener('submit', e => {
+  e.preventDefault();
+  SFX.ok();
+  $('recordForm').hidden = true;
+  toast(save.lastName ? 'Récord guardado a nombre de ' + save.lastName + '.' : 'Récord guardado sin nombre.', 3000);
+  document.querySelector('#s-over .stack button').focus({ preventScroll:true });
+});
 const ACTIONS = {
   solo() { SFX.ok(); startGame('solo'); },
   duelo() { SFX.ok(); startGame('duelo'); },
@@ -1153,6 +1224,7 @@ const ACTIONS = {
   pause() { pause(); },
   music() { toggleMusic(); },
   fx() { toggleFx(); },
+  share() { SFX.ui(); shareGame(); },
 };
 
 /* ========= Controles ========= */
@@ -1174,6 +1246,7 @@ function press(name) {
 const KEYS = { ArrowUp:'up', KeyW:'up', ArrowDown:'down', KeyS:'down', ArrowLeft:'left', KeyA:'left', ArrowRight:'right', KeyD:'right' };
 addEventListener('keydown', e => {
   audioInit();
+  if (e.target.tagName === 'INPUT') return; // Al escribir el nombre, las teclas no controlan el juego.
   if (e.code === 'KeyM') { toggleMusic(); return; }
   if (e.code === 'KeyN') { toggleFx(); return; }
   const dir = KEYS[e.code];
