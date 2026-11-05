@@ -121,6 +121,124 @@
           }
         }
       }
+    },
+    "gorilas": {
+      "rooms": {
+        "$code": {
+          ".validate": "$code.matches(/^[A-HJ-NP-Z2-9]{6}$/)",
+          ".write": "auth != null && !newData.exists() && data.child('host/uid').val() === auth.uid",
+          "host": {
+            ".read": "auth != null",
+            ".write": "auth != null && !data.exists() && newData.exists() && newData.child('uid').val() === auth.uid",
+            ".validate": "newData.hasChildren(['uid', 'name', 'at'])",
+            "uid": {
+              ".validate": "newData.isString()"
+            },
+            "name": {
+              ".validate": "newData.isString() && newData.val().matches(/^[^<>]{1,12}$/)"
+            },
+            "at": {
+              ".validate": "newData.val() === now"
+            },
+            "$other": {
+              ".validate": false
+            }
+          },
+          "guest": {
+            ".read": "auth != null",
+            ".write": "auth != null && data.parent().child('host').exists() && ((!data.exists() && newData.exists() && newData.child('uid').val() === auth.uid) || (data.exists() && !newData.exists() && data.child('uid').val() === auth.uid))",
+            ".validate": "newData.hasChildren(['uid', 'name', 'at'])",
+            "uid": {
+              ".validate": "newData.isString()"
+            },
+            "name": {
+              ".validate": "newData.isString() && newData.val().matches(/^[^<>]{1,12}$/)"
+            },
+            "at": {
+              ".validate": "newData.val() === now"
+            },
+            "$other": {
+              ".validate": false
+            }
+          },
+          "config": {
+            ".read": "auth != null",
+            ".write": "auth != null && data.parent().child('host/uid').val() === auth.uid",
+            ".validate": "newData.hasChildren(['n', 'seed', 'planet', 'lives', 'starter'])",
+            "n": {
+              ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 100000"
+            },
+            "seed": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 2147483647"
+            },
+            "planet": {
+              ".validate": "newData.isString() && newData.val().matches(/^(luna|marte|tierra|jupiter)$/)"
+            },
+            "lives": {
+              ".validate": "newData.isNumber() && newData.val() >= 3 && newData.val() <= 7"
+            },
+            "starter": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1"
+            },
+            "$other": {
+              ".validate": false
+            }
+          },
+          "shots": {
+            ".read": "auth != null",
+            ".write": "auth != null && !newData.exists() && data.parent().child('host/uid').val() === auth.uid",
+            "$id": {
+              ".write": "auth != null && !data.exists() && newData.exists() && (data.parent().parent().child('host/uid').val() === auth.uid || data.parent().parent().child('guest/uid').val() === auth.uid)",
+              ".validate": "$id.length <= 16 && newData.hasChildren(['who', 'by', 'a', 'p', 't', 'c', 'x', 'y', 'k', 'h'])",
+              "who": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1"
+              },
+              "by": {
+                ".validate": "newData.isString() && newData.val().matches(/^(host|guest)$/)"
+              },
+              "a": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 180"
+              },
+              "p": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+              },
+              "t": {
+                ".validate": "newData.isString() && newData.val().matches(/^(simple|super|pass)$/)"
+              },
+              "c": {
+                ".validate": "newData.isNumber()"
+              },
+              "x": {
+                ".validate": "newData.isNumber() && newData.val() >= -2000 && newData.val() <= 4000"
+              },
+              "y": {
+                ".validate": "newData.isNumber() && newData.val() >= -20000 && newData.val() <= 2000"
+              },
+              "k": {
+                ".validate": "newData.isString() && newData.val().length <= 8"
+              },
+              "h": {
+                ".validate": "newData.isString() && newData.val().length <= 64"
+              },
+              "$other": {
+                ".validate": false
+              }
+            }
+          },
+          "again": {
+            ".read": "auth != null",
+            ".write": "auth != null && !newData.exists() && data.parent().child('host/uid').val() === auth.uid",
+            "host": {
+              ".write": "auth != null && data.parent().parent().child('host/uid').val() === auth.uid",
+              ".validate": "newData.isNumber()"
+            },
+            "guest": {
+              ".write": "auth != null && data.parent().parent().child('guest/uid').val() === auth.uid",
+              ".validate": "newData.isNumber()"
+            }
+          }
+        }
+      }
     }
   }
 }
