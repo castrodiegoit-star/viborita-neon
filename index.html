@@ -1347,7 +1347,7 @@ function updateHud() {
   const sec = ms => (ms / 1000).toFixed(1) + ' s';
   const direct = W.online && net && p2pReady() && net.p2p.rtt > 0;
   const rtt = !W.online || !net ? 0 : direct ? net.p2p.rtt : net.rtt;
-  setChip('chNet', !!rtt, (direct ? 'DIRECTA ' : 'SERVIDOR ') + Math.round(rtt) + ' ms · ' + Math.round(fpsAvg) + ' FPS');
+  setChip('chNet', !!rtt, (direct ? (net.p2p.relay ? 'RELÉ ' : 'DIRECTA ') : 'SERVIDOR ') + Math.round(rtt) + ' ms · ' + Math.round(fpsAvg) + ' FPS');
   if (rtt) $('chNet').style.setProperty('--c', rtt < 120 && fpsAvg > 45 ? COLOR.green : rtt < 250 && fpsAvg > 30 ? COLOR.yellow : COLOR.red);
   setChip('chTurbo', W.t.turbo > 0, (W.online ? 'TURBO ' : 'TURBO ×2 ') + sec(W.t.turbo));
   setChip('chLento', W.t.lento > 0, 'LENTO ' + sec(W.t.lento));
@@ -1508,12 +1508,50 @@ function netOpen(role, code, name) {
 
 /* ----- Conexión directa entre jugadores -----
    Los datos urgentes viajan por un canal directo si las dos redes lo permiten.
+   Si las redes lo impiden, el canal pasa por un relé (TURN).
    Si no se abre o se cae, todo sigue funcionando por el servidor. */
 const ICE_CONFIG = { iceServers:[{ urls:['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }] };
-const P2P_PING_MS = 1000, P2P_DEAD_MS = 2500, ICE_WAIT_MS = 2500;
+const P2P_PING_MS = 1000, P2P_DEAD_MS = 2500, ICE_WAIT_MS = 2500, ICE_FETCH_MS = 3000, P2P_PATH_EVERY = 5;
+// Esta clave es pública a propósito: Metered la pensó para el navegador y sólo da acceso al relé.
+const TURN_URL = 'https://castrodiego.metered.live/api/v1/turn/credentials?apiKey=9470361144f8bc62e78e745898f5bfec8689';
+let icePromise = null;
+
+// Pide los datos del relé una sola vez. Si falla, se juega sin relé y se reintenta la próxima.
+function iceServers() {
+  if (icePromise) return icePromise;
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), ICE_FETCH_MS);
+  icePromise = fetch(TURN_URL, { signal:stop.signal })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+    .then(list => {
+      if (!Array.isArray(list) || !list.length) throw new Error('respuesta vacía');
+      return list;
+    })
+    .catch(e => {
+      console.warn('Relé no disponible:', e.message);
+      icePromise = null;
+      return ICE_CONFIG.iceServers;
+    })
+    .finally(() => clearTimeout(timer));
+  return icePromise;
+}
+// Averigua si el canal abierto pasa por el relé.
+async function p2pPath(p) {
+  try {
+    const stats = await p.pc.getStats();
+    let pair = null;
+    stats.forEach(r => { if (r.type === 'transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId); });
+    if (!pair) stats.forEach(r => { if (!pair && r.type === 'candidate-pair' && r.state === 'succeeded' && (r.selected || r.nominated)) pair = r; });
+    if (!pair) return;
+    const mine = stats.get(pair.localCandidateId), theirs = stats.get(pair.remoteCandidateId);
+    p.relay = (!!mine && mine.candidateType === 'relay') || (!!theirs && theirs.candidateType === 'relay');
+  } catch (e) {}
+}
 
 function p2pClose() {
-  if (!net || !net.p2p) return;
+  if (!net) return;
+  net.p2pWant = '';
+  if (!net.p2p) return;
   const p = net.p2p;
   net.p2p = null;
   clearInterval(p.timer);
@@ -1533,10 +1571,10 @@ function p2pIceDone(pc) {
     });
   });
 }
-function p2pNew(id) {
+function p2pNew(id, ice) {
   p2pClose();
-  const pc = new RTCPeerConnection(ICE_CONFIG);
-  const p = { pc, id, ch:null, up:false, rtt:0, lastPong:0, timer:0, answered:false };
+  const pc = new RTCPeerConnection({ iceServers:ice });
+  const p = { pc, id, ch:null, up:false, relay:false, rtt:0, lastPong:0, timer:0, ticks:0, answered:false };
   pc.addEventListener('connectionstatechange', () => {
     if (pc.connectionState === 'failed' || pc.connectionState === 'closed') p.up = false;
   });
@@ -1549,8 +1587,10 @@ function p2pWire(p, ch) {
     p.up = true;
     p.lastPong = performance.now();
     ch.send('p' + performance.now());
+    p2pPath(p);
     p.timer = setInterval(() => {
       if (ch.readyState !== 'open') { p.up = false; return; }
+      if (++p.ticks % P2P_PATH_EVERY === 0) p2pPath(p);
       if (performance.now() - p.lastPong > P2P_DEAD_MS) p.up = false;
       try { ch.send('p' + performance.now()); } catch (e) { p.up = false; }
     }, P2P_PING_MS);
@@ -1577,8 +1617,11 @@ function p2pWire(p, ch) {
 async function p2pOffer() {
   if (!window.RTCPeerConnection) return;
   const room = net, id = newRoomCode();
+  net.p2pWant = id;
   try {
-    const p = p2pNew(id);
+    const ice = await iceServers();
+    if (net !== room || net.p2pWant !== id) return;
+    const p = p2pNew(id, ice);
     p2pWire(p, p.pc.createDataChannel('juego', { ordered:false, maxRetransmits:0 }));
     await p.pc.setLocalDescription(await p.pc.createOffer());
     await p2pIceDone(p.pc);
@@ -1597,10 +1640,13 @@ async function p2pOnAnswer(text) {
 async function p2pOnOffer(text) {
   if (!text || !window.RTCPeerConnection) return;
   const cut = text.indexOf('|'), id = text.slice(0, cut);
-  if (net.p2p && net.p2p.id === id) return;
+  if (net.p2pWant === id || (net.p2p && net.p2p.id === id)) return;
   const room = net;
+  net.p2pWant = id;
   try {
-    const p = p2pNew(id);
+    const ice = await iceServers();
+    if (net !== room || net.p2pWant !== id) return;
+    const p = p2pNew(id, ice);
     p.pc.addEventListener('datachannel', e => p2pWire(p, e.channel));
     await p.pc.setRemoteDescription({ type:'offer', sdp:text.slice(cut + 1) });
     await p.pc.setLocalDescription(await p.pc.createAnswer());
@@ -1709,6 +1755,7 @@ function netAttach() {
   netListen(sdk.onChildRemoved(items, s => onItemRemoved(s.key), onFail));
   netListen(sdk.onChildAdded(walls, s => onWallAdded(s.key, s.val()), onFail));
   const noSig = e => console.warn('Conexión directa no disponible:', e.code);
+  iceServers();
   if (role === 'host') netListen(sdk.onValue(netRef('sig/answer'), s => p2pOnAnswer(s.val()), noSig));
   else netListen(sdk.onValue(netRef('sig/offer'), s => p2pOnOffer(s.val()), noSig));
   netListen(sdk.onValue(sdk.ref(rtc.db, '.info/connected'), s => {
