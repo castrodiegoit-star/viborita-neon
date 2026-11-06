@@ -258,7 +258,7 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
             <li><canvas data-piece="turbo" aria-hidden="true"></canvas><div><b>Turbo · 15 puntos</b><span>6 segundos más rápido y con puntos dobles.</span></div></li>
             <li><canvas data-piece="lento" aria-hidden="true"></canvas><div><b>Tiempo lento · 15 puntos</b><span>6 segundos a menor velocidad.</span></div></li>
             <li><canvas data-piece="escudo" aria-hidden="true"></canvas><div><b>Escudo · 15 puntos</b><span>Absorbe un choque y atraviesas todo 1.5 segundos.</span></div></li>
-            <li><canvas data-piece="inversor" aria-hidden="true"></canvas><div><b>Inversor · 30 puntos</b><span>Trampa: 5 segundos con los controles al revés.</span></div></li>
+            <li><canvas data-piece="inversor" aria-hidden="true"></canvas><div><b>Inversor · 30 puntos</b><span>Riesgo: 5 segundos con los controles al revés. Mientras dura, cada pieza vale el triple, y si sobrevives ganas 100 puntos más.</span></div></li>
           </ul>
         </div>
         <p>Las piezas especiales desaparecen a los 10 segundos y parpadean cuando les quedan 3.</p>
@@ -955,7 +955,8 @@ function pickups(b, x, y) {
       if (it.type === 'energia') spawnItem('energia');
       return;
     }
-    const pts = def.points * (W.t.turbo > 0 ? 2 : 1);
+    // Con los controles al revés todo vale el triple: es el premio por arriesgarse.
+    const pts = def.points * (W.t.turbo > 0 ? 2 : 1) * (W.t.inversor > 0 ? INV_MULT : 1);
     W.score += pts;
     switch (it.type) {
       case 'energia':
@@ -980,11 +981,20 @@ function pickups(b, x, y) {
       case 'escudo':
         W.shield = true; fx('escudo'); floatText(x, y, 'ESCUDO', def.color); break;
       case 'inversor':
-        W.t.inversor = 5000; b.queue.length = 0; fx('inversor'); floatText(x, y, '¡CONTROLES AL REVÉS!', def.color);
+        W.t.inversor = 5000; b.queue.length = 0; fx('inversor'); floatText(x, y, W.online ? '¡CONTROLES AL REVÉS!' : '¡AL REVÉS! PUNTOS ×' + INV_MULT, def.color);
         W.flash = .2; W.flashColor = def.color; break;
     }
     return;
   }
+}
+// Premio por aguantar los controles al revés hasta el final.
+const INV_MULT = 3, INV_BONUS = 100;
+function invSurvived() {
+  W.score += INV_BONUS;
+  fx('nivel');
+  const h = player().cells[0];
+  floatText(h.x, h.y - 2, '¡SOBREVIVISTE! +' + INV_BONUS, COLOR.red, 1.4);
+  W.flash = .15; W.flashColor = COLOR.red;
 }
 function levelUp() {
   W.level++;
@@ -1090,7 +1100,11 @@ function update(dt) {
   for (const k of ['turbo', 'lento', 'inversor', 'ghost']) {
     if (W.t[k] > 0) {
       W.t[k] -= dt;
-      if (W.t[k] <= 0) { W.t[k] = 0; if (k !== 'ghost') fx('vence'); }
+      if (W.t[k] <= 0) {
+        W.t[k] = 0;
+        if (k === 'inversor' && !W.online && player().alive) invSurvived();
+        else if (k !== 'ghost') fx('vence');
+      }
     }
   }
   for (const w of W.walls) w.age += dt;
@@ -1430,7 +1444,7 @@ function updateHud() {
   if (rtt) $('chNet').style.setProperty('--c', rtt < 120 && fpsAvg > 45 ? COLOR.green : rtt < 250 && fpsAvg > 30 ? COLOR.yellow : COLOR.red);
   setChip('chTurbo', W.t.turbo > 0, (W.online ? 'TURBO ' : 'TURBO ×2 ') + sec(W.t.turbo));
   setChip('chLento', W.t.lento > 0, 'LENTO ' + sec(W.t.lento));
-  setChip('chInv', W.t.inversor > 0, 'AL REVÉS ' + sec(W.t.inversor));
+  setChip('chInv', W.t.inversor > 0, 'AL REVÉS ' + (W.online ? '' : '×' + INV_MULT + ' ') + sec(W.t.inversor));
   setChip('chEscudo', W.shield || W.t.ghost > 0, W.t.ghost > 0 ? 'ATRAVIESAS ' + sec(W.t.ghost) : 'ESCUDO LISTO');
 }
 let lastFrame = 0, fpsAvg = 60;
