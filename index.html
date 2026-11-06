@@ -104,6 +104,16 @@ canvas#board { display: block; touch-action: none; box-shadow: 0 0 0 1.5px var(-
 .tally { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; margin: 0; }
 .tally dt { color: var(--dim); }
 .tally dd { margin: 0; font-family: var(--mono); font-size: 19px; text-align: right; font-variant-numeric: tabular-nums; }
+.podium { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; margin: 0; font-family: var(--mono); font-size: 13px; }
+.podium h3 { margin: 0; font: 400 12px var(--mono); color: var(--dim); letter-spacing: .12em; text-transform: uppercase; }
+.podium ol, .top3 { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.podium li, .top3 li { display: flex; gap: 8px; color: var(--ink); white-space: nowrap; }
+.podium li span, .top3 li span { overflow: hidden; text-overflow: ellipsis; }
+.podium li b, .top3 li b { min-width: 2.2ch; font-weight: 400; color: var(--dim); }
+.podium li:first-child, .top3 li:first-child { color: var(--yellow); }
+.podium li.empty, .top3 li.empty { color: var(--dim); }
+.top3 { font-family: var(--mono); font-size: 15px; align-items: flex-end; }
+.top3 li.mine { color: var(--cyan); text-shadow: 0 0 10px var(--cyan); }
 .record { color: var(--yellow); font-weight: 700; margin: 0; text-shadow: 0 0 12px var(--yellow); }
 .namebox { display: flex; flex-direction: column; gap: 6px; margin: 0; }
 .namebox label { color: var(--ink); font-size: 15px; }
@@ -155,6 +165,7 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
   .panel { gap: 10px; padding: 14px 18px; }
   .panel h2 { font-size: 30px; }
   .tally dd { font-size: 16px; }
+  .podium { font-size: 12px; }
 }
 @media (max-height: 460px) { .tag { display: none; } }
 @media (prefers-reduced-motion: reduce) { .logo { animation: none; } * { transition: none !important; } }
@@ -199,6 +210,10 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
           <button class="btn" data-act="online" type="button">Desafiar a alguien <small>1 vs 1 en línea</small></button>
           <button class="btn" data-act="rules" type="button">Reglas y piezas</button>
           <button class="btn" data-act="share" type="button">Compartir el juego</button>
+        </div>
+        <div class="podium" aria-label="Los tres mejores puntajes de todos los jugadores">
+          <h3>Podio solo</h3><h3>Podio duelo</h3>
+          <ol id="podiumSolo"></ol><ol id="podiumDuelo"></ol>
         </div>
         <div class="sndrow">
           <button class="mini tgl-music" data-act="music" type="button">Música</button>
@@ -279,7 +294,7 @@ kbd { font: 400 13px var(--mono); border: 1px solid #38506f; padding: 1px 5px; c
         </form>
         <dl class="tally">
           <dt>Puntos</dt><dd id="overScore">0</dd>
-          <dt>Récord mundial</dt><dd id="overBest">0</dd>
+          <dt>Podio mundial</dt><dd><ol class="top3" id="overBest"></ol></dd>
           <dt>Tu mejor puntaje</dt><dd id="overMine">0</dd>
           <dt>Largo máximo</dt><dd id="overLen">0</dd>
           <dt>Nivel alcanzado</dt><dd id="overLevel">1</dd>
@@ -411,19 +426,48 @@ const FIREBASE_CONFIG = {
   appId: '1:1000000440034:web:0b8b66484104ef1436c0bb',
 };
 const FIREBASE_SDK = 'https://www.gstatic.com/firebasejs/13.1.0/';
-const WORLD = { solo:null, duelo:null };
-let fb = null, pendingRecord = null;
+// Cada modo guarda tres puestos: records/solo, records/solo2 y records/solo3.
+const PODIUM = 3;
+const WORLD = { solo:[null, null, null], duelo:[null, null, null] };
+let fb = null, pendingRecord = null, myPodium = null;
 
-function bestScore(mode) { return WORLD[mode] ? WORLD[mode].score : save[mode]; }
-function bestName(mode) { return WORLD[mode] ? WORLD[mode].name : ''; }
+function slotDoc(mode, i) { return mode + (i ? i + 1 : ''); }
+function worldReady(mode) { return !!WORLD[mode] && WORLD[mode].every(Boolean); }
+// Los puestos con puntaje, de mayor a menor.
+function podium(mode) {
+  return (WORLD[mode] || []).filter(e => e && e.score > 0).sort((a, b) => b.score - a.score).slice(0, PODIUM);
+}
+// En qué puesto quedaría un puntaje, o 0 si no entra al podio.
+function podiumRank(mode, score) {
+  if (!worldReady(mode) || score <= 0) return 0;
+  const top = podium(mode);
+  const rank = top.filter(e => e.score >= score).length + 1;
+  return rank <= PODIUM ? rank : 0;
+}
+function fillPodium(list, mode, mine) {
+  const top = podium(mode);
+  list.replaceChildren(...Array.from({ length:PODIUM }, (_, i) => {
+    const li = document.createElement('li'), b = document.createElement('b'), span = document.createElement('span');
+    const e = top[i];
+    b.textContent = (i + 1) + '.';
+    span.textContent = !worldReady(mode) ? '…' : e ? e.score + ' ' + (e.name || 'Anónimo') : '—';
+    li.className = !e ? 'empty' : mine === i + 1 ? 'mine' : '';
+    li.append(b, span);
+    return li;
+  }));
+}
+function bestScore(mode) { const e = podium(mode)[0]; return worldReady(mode) ? (e ? e.score : 0) : save[mode]; }
+function bestName(mode) { const e = podium(mode)[0]; return e ? e.name : ''; }
 function bestLine(mode) {
-  const name = bestName(mode);
-  return bestScore(mode) + (name ? ' · ' + name : '');
+  const e = podium(mode)[0];
+  return e ? e.score + ' · ' + e.name : String(save[mode]);
 }
 function refreshRecords() {
   $('bestSolo').textContent = 'récord ' + bestLine('solo');
   $('bestDuelo').textContent = 'récord ' + bestLine('duelo');
-  if (scr === 'over' && W) $('overBest').textContent = bestLine(W.mode);
+  fillPodium($('podiumSolo'), 'solo');
+  fillPodium($('podiumDuelo'), 'duelo');
+  if (scr === 'over' && W && WORLD[W.mode]) fillPodium($('overBest'), W.mode, myPodium && myPodium.mode === W.mode ? myPodium.rank : 0);
 }
 async function connectRecords() {
   try {
@@ -433,17 +477,17 @@ async function connectRecords() {
     ]);
     const db = fs.getFirestore(appSdk.initializeApp(FIREBASE_CONFIG));
     fb = { fs, db };
-    for (const mode of ['solo', 'duelo']) {
-      fs.onSnapshot(fs.doc(db, 'records', mode), snap => {
+    for (const mode of ['solo', 'duelo']) for (let i = 0; i < PODIUM; i++) {
+      fs.onSnapshot(fs.doc(db, 'records', slotDoc(mode, i)), snap => {
         const d = snap.exists() ? snap.data() : null;
-        // Sin internet llega un documento vacío: no significa que el récord sea 0.
+        // Sin internet llega un documento vacío: no significa que el puesto esté libre.
         if (!d && snap.metadata.fromCache) return;
-        WORLD[mode] = { score: d ? d.score : 0, name: d ? d.name : '' };
+        WORLD[mode][i] = { score: d ? d.score : 0, name: d ? d.name : '' };
         refreshRecords();
       }, err => {
-        WORLD[mode] = null;
+        WORLD[mode][i] = null;
         refreshRecords();
-        console.warn('No se pudo leer el récord mundial:', err.code);
+        console.warn('No se pudo leer el podio:', err.code);
       });
     }
   } catch (e) {
@@ -456,17 +500,32 @@ async function publishRecord() {
   pendingRecord = null;
   const name = save.lastName || 'Anónimo';
   const { fs, db } = fb;
-  const ref = fs.doc(db, 'records', rec.mode);
+  const refs = Array.from({ length:PODIUM }, (_, i) => fs.doc(db, 'records', slotDoc(rec.mode, i)));
   try {
-    const won = await fs.runTransaction(db, async tx => {
-      const snap = await tx.get(ref);
-      if (snap.exists() && snap.data().score >= rec.score) return false;
-      tx.set(ref, { score: rec.score, name, at: fs.serverTimestamp() });
-      return true;
+    // Se lee el podio entero y se corre hacia abajo a quienes quedan detrás del puntaje nuevo.
+    const rank = await fs.runTransaction(db, async tx => {
+      const snaps = await Promise.all(refs.map(r => tx.get(r)));
+      const old = snaps.map(s => s.exists() ? s.data() : { score:0, name:'' });
+      const list = old.filter(e => e.score > 0).map(e => ({ score:e.score, name:e.name }));
+      const mine = { score:rec.score, name, mine:true };
+      list.push(mine);
+      list.sort((a, b) => b.score - a.score);
+      const top = list.slice(0, PODIUM);
+      const at = top.indexOf(mine);
+      if (at < 0) return 0;
+      top.forEach((e, i) => {
+        if (e.score === old[i].score && e.name === old[i].name) return;
+        // Cada puesto sólo puede subir: así lo exigen las reglas.
+        if (e.score < old[i].score) return;
+        tx.set(refs[i], { score:e.score, name:e.name, at:fs.serverTimestamp() });
+      });
+      return at + 1;
     });
-    toast(won
-      ? 'Récord publicado a nombre de ' + name + '. Ya lo ven todos los jugadores.'
-      : 'Otro jugador publicó un récord mayor antes que tú.', 4000);
+    if (rank) myPodium = { mode:rec.mode, rank };
+    refreshRecords();
+    toast(rank
+      ? 'Quedaste en el puesto ' + rank + ' a nombre de ' + name + '. Ya lo ven todos los jugadores.'
+      : 'Otros jugadores ocuparon el podio antes que tú.', 4000);
   } catch (e) {
     console.warn('No se pudo publicar el récord:', e.code);
     if (scr === 'over' && W && W.mode === rec.mode && W.score === rec.score) {
@@ -1194,11 +1253,18 @@ function drawBike(b, now) {
   const lines = trailSegments(b, t);
   const ghost = (isHuman(b) && W.t.ghost > 0) || b.netGhost;
   const spawning = W.time - b.born < 700 && b.born > 0;
+  const shielded = !ghost && ((isHuman(b) && W.shield) || b.netShield);
   const color = ghost ? COLOR.violet : b.color;
   const flick = ghost || spawning ? (.45 + .35 * Math.sin(now / 35)) : 1;
   g.save();
   g.lineJoin = 'round'; g.lineCap = 'round';
   g.globalCompositeOperation = 'lighter';
+  // Escudo: un aura violeta que late alrededor de todo el cuerpo.
+  if (shielded) {
+    const beat = .5 + .5 * Math.sin(now / 160);
+    strokeLines(lines, cell * 2.3, COLOR.violet, .1 + .08 * beat);
+    strokeLines(lines, cell * 1.25, COLOR.violet, .35 + .2 * beat);
+  }
   strokeLines(lines, cell * 1.5, color, .09 * flick);
   strokeLines(lines, cell * .95, color, .2 * flick);
   strokeLines(lines, cell * .5, color, .95 * flick);
@@ -1220,6 +1286,19 @@ function drawBike(b, now) {
   halo.addColorStop(0, color); halo.addColorStop(1, 'rgba(0,0,0,0)');
   g.globalAlpha = .55 * flick; g.fillStyle = halo;
   g.beginPath(); g.arc(0, 0, s * flare * 1.3, 0, Math.PI * 2); g.fill();
+  if (shielded) {
+    // El mismo hexágono de la pieza, girando alrededor de la cabeza.
+    g.save();
+    g.rotate(now / 900);
+    g.strokeStyle = COLOR.violet; g.lineWidth = Math.max(1.5, s * .14);
+    g.shadowColor = COLOR.violet; g.shadowBlur = s * .8;
+    g.globalAlpha = .75 + .25 * Math.sin(now / 160);
+    const r = s * 1.15;
+    g.beginPath();
+    for (let k = 0; k < 6; k++) { const a = Math.PI / 3 * k; k ? g.lineTo(Math.cos(a) * r, Math.sin(a) * r) : g.moveTo(r, 0); }
+    g.closePath(); g.stroke();
+    g.restore();
+  }
   g.globalCompositeOperation = 'source-over';
   g.globalAlpha = flick;
   g.rotate(Math.atan2(d.y, d.x));
@@ -1411,17 +1490,18 @@ function resume() {
   show('play'); musicDuck(false);
 }
 function gameOver() {
-  const world = !!(fb && WORLD[W.mode]) && W.score > WORLD[W.mode].score;
+  const rank = fb ? podiumRank(W.mode, W.score) : 0, world = rank > 0;
+  myPodium = null;
   const personal = W.score > save[W.mode];
   if (personal) { save[W.mode] = W.score; persist(); }
   pendingRecord = world ? { mode:W.mode, score:W.score } : null;
   $('overCause').textContent = CAUSES[W.cause] || '';
   $('overRecord').hidden = !world && !personal;
-  $('overRecord').textContent = world ? '¡Nuevo récord mundial!' : '¡Nuevo récord personal!';
+  $('overRecord').textContent = rank === 1 ? '¡Nuevo récord mundial!' : world ? '¡Entraste al podio! Puesto ' + rank : '¡Nuevo récord personal!';
   $('recordForm').hidden = !world;
   $('recordName').value = save.lastName;
   $('overScore').textContent = W.score;
-  $('overBest').textContent = bestLine(W.mode);
+  fillPodium($('overBest'), W.mode);
   $('overMine').textContent = save[W.mode];
   $('overLen').textContent = W.maxLen;
   $('overLevel').textContent = W.level;
@@ -1830,7 +1910,7 @@ function sendMyState() {
   const p = player();
   let cells = '';
   for (const c of p.cells) cells += c.x.toString(36) + c.y.toString(36);
-  const value = net.n + '|' + p.dir[0] + '|' + (W.t.ghost > 0 ? 1 : 0) + '|' + cells + '|' + Math.round(stepMs(p)) + '|' + (++net.stateSeq);
+  const value = net.n + '|' + p.dir[0] + '|' + (W.t.ghost > 0 ? 1 : W.shield ? 2 : 0) + '|' + cells + '|' + Math.round(stepMs(p)) + '|' + (++net.stateSeq);
   if (p2pSend('s' + value)) return;
   const write = rtc.sdk.set(netRef('state/' + net.role), value);
   write.catch(e => console.warn('Sala: estado', e.code));
@@ -1879,6 +1959,7 @@ function onRivalState(text) {
   if (Number(step) > 0) r.netStep = Number(step);
   const newDir = DIR_BY_LETTER[dir];
   r.netGhost = ghost === '1';
+  r.netShield = ghost === '2';
   const list = [];
   for (let i = 0; i + 1 < cells.length; i += 2) list.push({ x:parseInt(cells[i], 36), y:parseInt(cells[i + 1], 36) });
   // Si siguió recto, la cabeza dibujada no salta: solo se descuenta lo que avanzó.

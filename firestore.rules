@@ -2,10 +2,11 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Un récord por modo. Solo se puede publicar uno mayor al que ya existe.
+    // Podio de tres puestos por modo: solo, solo2, solo3, duelo, duelo2, duelo3.
+    // Cada puesto sólo puede subir; al entrar un puntaje, los de abajo se corren.
     match /records/{mode} {
       function validMode() {
-        return mode in ['solo', 'duelo'];
+        return mode in ['solo', 'solo2', 'solo3', 'duelo', 'duelo2', 'duelo3'];
       }
       function validRecord() {
         let d = request.resource.data;
@@ -19,7 +20,8 @@ service cloud.firestore {
       allow read: if validMode();
       allow create: if validMode() && validRecord();
       allow update: if validMode() && validRecord()
-        && request.resource.data.score > resource.data.score
+        && (request.resource.data.score > resource.data.score
+          || (mode.matches('.*[23]$') && request.resource.data.score >= resource.data.score))
         && request.time > resource.data.at + duration.value(5, 's');
       allow delete: if false;
     }
